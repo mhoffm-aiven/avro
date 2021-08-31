@@ -145,7 +145,8 @@ def validate(expected_schema: avro.schema.Schema, datum: object, raise_on_error:
         if valid_node is None:
             if raise_on_error:
                 raise avro.errors.AvroTypeException(current_node.schema, current_node.name, current_node.datum)
-            return False  # preserve the prior validation behavior of returning false when there are problems.
+            # preserve the prior validation behavior of returning false when there are problems.
+            return False
         # if there are children of this node to append, do so.
         for child_node in _iterate_node(valid_node):
             nodes.append(child_node)
@@ -601,10 +602,85 @@ class BinaryEncoder:
         microseconds = self._timedelta_total_microseconds(timedelta)
         self.write_long(microseconds)
 
+    # write logic for compound types we need to bounce control between the datum writer and
+    # the encoder because only the encoder knows how to encode compound types, but the datum writer
+    # is schema aware. at some point this could be probably refactored.
+
+    def write_enum(self, datum_writer: "DatumWriter", writers_schema: avro.schema.EnumSchema, datum: str) -> None:
+        """
+        An enum is encoded by a int, representing the zero-based position
+        of the symbol in the schema.
+        """
+        index_of_datum = writers_schema.symbols.index(datum)
+        return self.write_int(index_of_datum)
+
+    def write_array(self, datum_writer: "DatumWriter", writers_schema: avro.schema.ArraySchema, datum: Sequence[object]) -> None:
+        """
+        Arrays are encoded as a series of blocks.
+
+        Each block consists of a long count value,
+        followed by that many array items.
+        A block with count zero indicates the end of the array.
+        Each item is encoded per the array's item schema.
+
+        If a block's count is negative,
+        then the count is followed immediately by a long block size,
+        indicating the number of bytes in the block.
+        The actual count in this case
+        is the absolute value of the count written.
+        """
+        if len(datum) > 0:
+            self.write_long(len(datum))
+            for item in datum:
+                datum_writer.write_data(writers_schema.items, item, self)
+        return self.write_long(0)
+
+    def write_map(self, datum_writer: "DatumWriter", writers_schema: avro.schema.MapSchema, datum: Mapping[str, object]) -> None:
+        """
+        Maps are encoded as a series of blocks.
+
+        Each block consists of a long count value,
+        followed by that many key/value pairs.
+        A block with count zero indicates the end of the map.
+        Each item is encoded per the map's value schema.
+
+        If a block's count is negative,
+        then the count is followed immediately by a long block size,
+        indicating the number of bytes in the block.
+        The actual count in this case
+        is the absolute value of the count written.
+        """
+        if len(datum) > 0:
+            self.write_long(len(datum))
+            for key, val in datum.items():
+                self.write_utf8(key)
+                datum_writer.write_data(writers_schema.values, val, self)
+        self.write_long(0)
+
+    def write_union(self, datum_writer: "DatumWriter", writers_schema: avro.schema.UnionSchema, datum: object) -> None:
+        """
+        A union is encoded by first writing an int value indicating
+        the zero-based position within the union of the schema of its value.
+        The value is then encoded per the indicated schema within the union.
+        """
+        # resolve union
+        index_of_schema = -1
+        for i, candidate_schema in enumerate(writers_schema.schemas):
+            if validate(candidate_schema, datum):
+                index_of_schema = i
+        if index_of_schema < 0:
+            raise avro.errors.AvroTypeException(writers_schema, datum)
+
+        # write data
+        self.write_long(index_of_schema)
+        return datum_writer.write_data(writers_schema.schemas[index_of_schema], datum, self)
+
 
 #
 # DatumReader/Writer
 #
+
+
 class DatumReader:
     """Deserialize Avro-encoded data into a Python data structure."""
 
@@ -1112,73 +1188,16 @@ class DatumWriter:
         return encoder.write(datum)
 
     def write_enum(self, writers_schema: avro.schema.EnumSchema, datum: str, encoder: BinaryEncoder) -> None:
-        """
-        An enum is encoded by a int, representing the zero-based position
-        of the symbol in the schema.
-        """
-        index_of_datum = writers_schema.symbols.index(datum)
-        return encoder.write_int(index_of_datum)
+        return encoder.write_enum(self, writers_schema, datum)
 
     def write_array(self, writers_schema: avro.schema.ArraySchema, datum: Sequence[object], encoder: BinaryEncoder) -> None:
-        """
-        Arrays are encoded as a series of blocks.
-
-        Each block consists of a long count value,
-        followed by that many array items.
-        A block with count zero indicates the end of the array.
-        Each item is encoded per the array's item schema.
-
-        If a block's count is negative,
-        then the count is followed immediately by a long block size,
-        indicating the number of bytes in the block.
-        The actual count in this case
-        is the absolute value of the count written.
-        """
-        if len(datum) > 0:
-            encoder.write_long(len(datum))
-            for item in datum:
-                self.write_data(writers_schema.items, item, encoder)
-        return encoder.write_long(0)
+        return encoder.write_array(self, writers_schema, datum)
 
     def write_map(self, writers_schema: avro.schema.MapSchema, datum: Mapping[str, object], encoder: BinaryEncoder) -> None:
-        """
-        Maps are encoded as a series of blocks.
-
-        Each block consists of a long count value,
-        followed by that many key/value pairs.
-        A block with count zero indicates the end of the map.
-        Each item is encoded per the map's value schema.
-
-        If a block's count is negative,
-        then the count is followed immediately by a long block size,
-        indicating the number of bytes in the block.
-        The actual count in this case
-        is the absolute value of the count written.
-        """
-        if len(datum) > 0:
-            encoder.write_long(len(datum))
-            for key, val in datum.items():
-                encoder.write_utf8(key)
-                self.write_data(writers_schema.values, val, encoder)
-        return encoder.write_long(0)
+        return encoder.write_map(self, writers_schema, datum)
 
     def write_union(self, writers_schema: avro.schema.UnionSchema, datum: object, encoder: BinaryEncoder) -> None:
-        """
-        A union is encoded by first writing an int value indicating
-        the zero-based position within the union of the schema of its value.
-        The value is then encoded per the indicated schema within the union.
-        """
-        # resolve union
-        index_of_schema = -1
-        for i, candidate_schema in enumerate(writers_schema.schemas):
-            if validate(candidate_schema, datum):
-                index_of_schema = i
-        if index_of_schema < 0:
-            raise avro.errors.AvroTypeException(writers_schema, datum)
-
-        # write data
-        encoder.write_long(index_of_schema)
-        return self.write_data(writers_schema.schemas[index_of_schema], datum, encoder)
+        return encoder.write_union(self, writers_schema, datum)
 
     def write_record(self, writers_schema: avro.schema.RecordSchema, datum: Mapping[str, object], encoder: BinaryEncoder) -> None:
         """
