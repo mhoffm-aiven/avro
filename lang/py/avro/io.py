@@ -298,7 +298,88 @@ class Encoder(ABC):
 class Decoder(ABC):
 
     @abstractmethod
+    def read_null(self) -> None:
+        pass
+
+    @abstractmethod
+    def read_boolean(self) -> bool:
+        pass
+
+    @abstractmethod
+    def read_int(self) -> int:
+        pass
+
+    @abstractmethod
+    def read_long(self) -> int:
+        pass
+
+    @abstractmethod
+    def read_float(self) -> float:
+        pass
+
+    @abstractmethod
+    def read_double(self) -> float:
+        pass
+
+    @abstractmethod
+    def read_decimal_from_bytes(self, precision: int, scale: int) -> decimal.Decimal:
+        pass
+
+    @abstractmethod
+    def read_decimal_from_fixed(self, precision: int, scale: int, size: int) -> decimal.Decimal:
+        pass
+
+    @abstractmethod
+    def read_bytes(self) -> bytes:
+        pass
+
+    @abstractmethod
+    def read_utf8(self) -> str:
+        pass
+
+    @abstractmethod
+    def read_date_from_int(self) -> datetime.date:
+        pass
+
+    @abstractmethod
+    def read_time_millis_from_int(self) -> datetime.time:
+        pass
+
+    @abstractmethod
+    def read_time_micros_from_long(self) -> datetime.time:
+        pass
+
+    @abstractmethod
+    def read_timestamp_millis_from_long(self) -> datetime.datetime:
+        pass
+
+    @abstractmethod
+    def read_timestamp_micros_from_long(self) -> datetime.datetime:
+        pass
+
+    @abstractmethod
+    def read_fixed(self, writers_schema: avro.schema.FixedSchema, readers_schema: avro.schema.Schema) -> bytes:
+        pass
+
+    @abstractmethod
     def read_union(self, datum_reader: "DatumReader", writers_schema: avro.schema.UnionSchema, readers_schema: avro.schema.UnionSchema) -> object:
+        pass
+
+    @abstractmethod
+    def read_enum(self, datum_reader: "DatumReader", writers_schema: avro.schema.EnumSchema, readers_schema: avro.schema.EnumSchema) -> str:
+        pass
+
+    @abstractmethod
+    def read_array(self, datum_reader: "DatumReader", writers_schema: avro.schema.ArraySchema, readers_schema: avro.schema.ArraySchema) -> List[object]:
+        pass
+
+    @abstractmethod
+    def read_map(self, datum_reader: "DatumReader", writers_schema: avro.schema.MapSchema, readers_schema: avro.schema.MapSchema) -> Mapping[str, object]:
+        pass
+
+    @abstractmethod
+    def read_record(
+            self, datum_reader: "DatumReader", writers_schema: avro.schema.RecordSchema, readers_schema: avro.schema.RecordSchema) -> Mapping[str, object]:
         pass
 
 
@@ -419,253 +500,23 @@ class DatumReader:
             return self.read_record(writers_schema, readers_schema, decoder)
         raise avro.errors.AvroException(f"Cannot read unknown schema type: {writers_schema.type}")
 
-    def skip_data(self, writers_schema: avro.schema.Schema, decoder: Decoder) -> None:
-        if writers_schema.type == "null":
-            return decoder.skip_null()
-        if writers_schema.type == "boolean":
-            return decoder.skip_boolean()
-        if writers_schema.type == "string":
-            return decoder.skip_utf8()
-        if writers_schema.type == "int":
-            return decoder.skip_int()
-        if writers_schema.type == "long":
-            return decoder.skip_long()
-        if writers_schema.type == "float":
-            return decoder.skip_float()
-        if writers_schema.type == "double":
-            return decoder.skip_double()
-        if writers_schema.type == "bytes":
-            return decoder.skip_bytes()
-        if isinstance(writers_schema, avro.schema.FixedSchema):
-            return self.skip_fixed(writers_schema, decoder)
-        if isinstance(writers_schema, avro.schema.EnumSchema):
-            return self.skip_enum(writers_schema, decoder)
-        if isinstance(writers_schema, avro.schema.ArraySchema):
-            return self.skip_array(writers_schema, decoder)
-        if isinstance(writers_schema, avro.schema.MapSchema):
-            return self.skip_map(writers_schema, decoder)
-        if isinstance(writers_schema, avro.schema.UnionSchema):
-            return self.skip_union(writers_schema, decoder)
-        if isinstance(writers_schema, avro.schema.RecordSchema):
-            return self.skip_record(writers_schema, decoder)
-        raise avro.errors.AvroException(f"Unknown schema type: {writers_schema.type}")
-
     def read_fixed(self, writers_schema: avro.schema.FixedSchema, readers_schema: avro.schema.Schema, decoder: Decoder) -> bytes:
-        """
-        Fixed instances are encoded using the number of bytes declared
-        in the schema.
-        """
-        return decoder.read(writers_schema.size)
-
-    def skip_fixed(self, writers_schema: avro.schema.FixedSchema, decoder: Decoder) -> None:
-        return decoder.skip(writers_schema.size)
+        return decoder.read_fixed(writers_schema, readers_schema)
 
     def read_enum(self, writers_schema: avro.schema.EnumSchema, readers_schema: avro.schema.EnumSchema, decoder: Decoder) -> str:
-        """
-        An enum is encoded by a int, representing the zero-based position
-        of the symbol in the schema.
-        """
-        # read data
-        index_of_symbol = decoder.read_int()
-        if index_of_symbol >= len(writers_schema.symbols):
-            raise avro.errors.SchemaResolutionException(
-                f"Can't access enum index {index_of_symbol} for enum with {len(writers_schema.symbols)} symbols", writers_schema, readers_schema
-            )
-        read_symbol = writers_schema.symbols[index_of_symbol]
-
-        # schema resolution
-        if read_symbol not in readers_schema.symbols:
-            raise avro.errors.SchemaResolutionException(f"Symbol {read_symbol} not present in Reader's Schema", writers_schema, readers_schema)
-
-        return read_symbol
-
-    def skip_enum(self, writers_schema: avro.schema.EnumSchema, decoder: Decoder) -> None:
-        return decoder.skip_int()
+        return decoder.read_enum(self, writers_schema, readers_schema)
 
     def read_array(self, writers_schema: avro.schema.ArraySchema, readers_schema: avro.schema.ArraySchema, decoder: Decoder) -> List[object]:
-        """
-        Arrays are encoded as a series of blocks.
-
-        Each block consists of a long count value,
-        followed by that many array items.
-        A block with count zero indicates the end of the array.
-        Each item is encoded per the array's item schema.
-
-        If a block's count is negative,
-        then the count is followed immediately by a long block size,
-        indicating the number of bytes in the block.
-        The actual count in this case
-        is the absolute value of the count written.
-        """
-        read_items = []
-        block_count = decoder.read_long()
-        while block_count != 0:
-            if block_count < 0:
-                block_count = -block_count
-                block_size = decoder.read_long()
-            for i in range(block_count):
-                read_items.append(self.read_data(writers_schema.items, readers_schema.items, decoder))
-            block_count = decoder.read_long()
-        return read_items
-
-    def skip_array(self, writers_schema: avro.schema.ArraySchema, decoder: Decoder) -> None:
-        block_count = decoder.read_long()
-        while block_count != 0:
-            if block_count < 0:
-                block_size = decoder.read_long()
-                decoder.skip(block_size)
-            else:
-                for i in range(block_count):
-                    self.skip_data(writers_schema.items, decoder)
-            block_count = decoder.read_long()
+        return decoder.read_array(self, writers_schema, readers_schema)
 
     def read_map(self, writers_schema: avro.schema.MapSchema, readers_schema: avro.schema.MapSchema, decoder: Decoder) -> Mapping[str, object]:
-        """
-        Maps are encoded as a series of blocks.
-
-        Each block consists of a long count value,
-        followed by that many key/value pairs.
-        A block with count zero indicates the end of the map.
-        Each item is encoded per the map's value schema.
-
-        If a block's count is negative,
-        then the count is followed immediately by a long block size,
-        indicating the number of bytes in the block.
-        The actual count in this case
-        is the absolute value of the count written.
-        """
-        read_items = {}
-        block_count = decoder.read_long()
-        while block_count != 0:
-            if block_count < 0:
-                block_count = -block_count
-                block_size = decoder.read_long()
-            for i in range(block_count):
-                key = decoder.read_utf8()
-                read_items[key] = self.read_data(writers_schema.values, readers_schema.values, decoder)
-            block_count = decoder.read_long()
-        return read_items
-
-    def skip_map(self, writers_schema: avro.schema.MapSchema, decoder: Decoder) -> None:
-        block_count = decoder.read_long()
-        while block_count != 0:
-            if block_count < 0:
-                block_size = decoder.read_long()
-                decoder.skip(block_size)
-            else:
-                for i in range(block_count):
-                    decoder.skip_utf8()
-                    self.skip_data(writers_schema.values, decoder)
-            block_count = decoder.read_long()
+        return decoder.read_map(self, writers_schema, readers_schema)
 
     def read_union(self, writers_schema: avro.schema.UnionSchema, readers_schema: avro.schema.UnionSchema, decoder: Decoder) -> object:
         return decoder.read_union(self, writers_schema, readers_schema)
 
-    def skip_union(self, writers_schema: avro.schema.UnionSchema, decoder: Decoder) -> None:
-        index_of_schema = int(decoder.read_long())
-        if index_of_schema >= len(writers_schema.schemas):
-            raise avro.errors.SchemaResolutionException(
-                f"Can't access branch index {index_of_schema} for union with {len(writers_schema.schemas)} branches", writers_schema
-            )
-        return self.skip_data(writers_schema.schemas[index_of_schema], decoder)
-
-    def read_record(
-        self, writers_schema: avro.schema.RecordSchema, readers_schema: avro.schema.RecordSchema, decoder: Decoder) -> Mapping[str, object]:
-        """
-        A record is encoded by encoding the values of its fields
-        in the order that they are declared. In other words, a record
-        is encoded as just the concatenation of the encodings of its fields.
-        Field values are encoded per their schema.
-
-        Schema Resolution:
-         * the ordering of fields may be different: fields are matched by name.
-         * schemas for fields with the same name in both records are resolved
-           recursively.
-         * if the writer's record contains a field with a name not present in the
-           reader's record, the writer's value for that field is ignored.
-         * if the reader's record schema has a field that contains a default value,
-           and writer's schema does not have a field with the same name, then the
-           reader should use the default value from its field.
-         * if the reader's record schema has a field with no default value, and
-           writer's schema does not have a field with the same name, then the
-           field's value is unset.
-        """
-        # schema resolution
-        readers_fields_dict = readers_schema.fields_dict
-        read_record = {}
-        for field in writers_schema.fields:
-            readers_field = readers_fields_dict.get(field.name)
-            if readers_field is not None:
-                field_val = self.read_data(field.type, readers_field.type, decoder)
-                read_record[field.name] = field_val
-            else:
-                self.skip_data(field.type, decoder)
-
-        # fill in default values
-        if len(readers_fields_dict) > len(read_record):
-            writers_fields_dict = writers_schema.fields_dict
-            for field_name, field in readers_fields_dict.items():
-                if field_name not in writers_fields_dict:
-                    if not field.has_default:
-                        raise avro.errors.SchemaResolutionException(f"No default value for field {field_name}", writers_schema, readers_schema)
-                    field_val = self._read_default_value(field.type, field.default)
-                    read_record[field.name] = field_val
-        return read_record
-
-    def skip_record(self, writers_schema: avro.schema.RecordSchema, decoder: Decoder) -> None:
-        for field in writers_schema.fields:
-            self.skip_data(field.type, decoder)
-
-    def _read_default_value(self, field_schema: avro.schema.Schema, default_value: object) -> object:
-        """
-        Basically a JSON Decoder?
-        """
-        if field_schema.type == "null":
-            if default_value is None:
-                return None
-            raise avro.errors.InvalidDefaultException(field_schema, default_value)
-        if field_schema.type == "boolean":
-            return bool(default_value)
-        if field_schema.type in ("int", "long"):
-            if isinstance(default_value, int):
-                return default_value
-            raise avro.errors.InvalidDefaultException(field_schema, default_value)
-        if field_schema.type in ("float", "double"):
-            if isinstance(default_value, float):
-                return default_value
-            raise avro.errors.InvalidDefaultException(field_schema, default_value)
-        if field_schema.type in ("bytes", "fixed"):
-            if isinstance(default_value, bytes):
-                return default_value
-            if isinstance(default_value, str):
-                return default_value.encode()
-            raise avro.errors.InvalidDefaultException(field_schema, default_value)
-        if field_schema.type in ("enum", "string"):
-            if isinstance(default_value, str):
-                return default_value
-            raise avro.errors.InvalidDefaultException(field_schema, default_value)
-        if isinstance(field_schema, avro.schema.ArraySchema):
-            if isinstance(default_value, Iterable):
-                return [self._read_default_value(field_schema.items, json_val) for json_val in default_value]
-            raise avro.errors.InvalidDefaultException(field_schema, default_value)
-        if isinstance(field_schema, avro.schema.MapSchema):
-            if isinstance(default_value, Mapping):
-                return {key: self._read_default_value(field_schema.values, json_val) for key, json_val in default_value.items()}
-            raise avro.errors.InvalidDefaultException(field_schema, default_value)
-        if isinstance(field_schema, avro.schema.UnionSchema):
-            return self._read_default_value(field_schema.schemas[0], default_value)
-        if isinstance(field_schema, avro.schema.RecordSchema):
-            if not isinstance(default_value, Mapping):
-                raise avro.errors.InvalidDefaultException(field_schema, default_value)
-            read_record = {}
-            for field in field_schema.fields:
-                json_val = default_value.get(field.name)
-                if json_val is None:
-                    json_val = field.default
-                field_val = self._read_default_value(field.type, json_val)
-                read_record[field.name] = field_val
-            return read_record
-        raise avro.errors.AvroException(f"Unknown type: {field_schema.type}")
+    def read_record(self, writers_schema: avro.schema.RecordSchema, readers_schema: avro.schema.RecordSchema, decoder: Decoder) -> Mapping[str, object]:
+        return decoder.read_record(self, writers_schema, readers_schema)
 
 
 class DatumWriter:
@@ -1289,6 +1140,145 @@ class BinaryDecoder(Decoder):
     def skip(self, n: int) -> None:
         self.reader.seek(self.reader.tell() + n)
 
+    def skip_data(self, writers_schema: avro.schema.Schema) -> None:
+        if writers_schema.type == "null":
+            return self.skip_null()
+        if writers_schema.type == "boolean":
+            return self.skip_boolean()
+        if writers_schema.type == "string":
+            return self.skip_utf8()
+        if writers_schema.type == "int":
+            return self.skip_int()
+        if writers_schema.type == "long":
+            return self.skip_long()
+        if writers_schema.type == "float":
+            return self.skip_float()
+        if writers_schema.type == "double":
+            return self.skip_double()
+        if writers_schema.type == "bytes":
+            return self.skip_bytes()
+        if isinstance(writers_schema, avro.schema.FixedSchema):
+            return self.skip_fixed(writers_schema)
+        if isinstance(writers_schema, avro.schema.EnumSchema):
+            return self.skip_enum(writers_schema)
+        if isinstance(writers_schema, avro.schema.ArraySchema):
+            return self.skip_array(writers_schema)
+        if isinstance(writers_schema, avro.schema.MapSchema):
+            return self.skip_map(writers_schema)
+        if isinstance(writers_schema, avro.schema.UnionSchema):
+            return self.skip_union(writers_schema)
+        if isinstance(writers_schema, avro.schema.RecordSchema):
+            return self.skip_record(writers_schema)
+        raise avro.errors.AvroException(f"Unknown schema type: {writers_schema.type}")
+
+    def read_fixed(self, writers_schema: avro.schema.FixedSchema, readers_schema: avro.schema.Schema) -> bytes:
+        """
+        Fixed instances are encoded using the number of bytes declared
+        in the schema.
+        """
+        return self.read(writers_schema.size)
+
+    def skip_fixed(self, writers_schema: avro.schema.FixedSchema) -> None:
+        return self.skip(writers_schema.size)
+
+    def read_enum(self, datum_reader: DatumReader, writers_schema: avro.schema.EnumSchema, readers_schema: avro.schema.EnumSchema) -> str:
+        """
+        An enum is encoded by a int, representing the zero-based position
+        of the symbol in the schema.
+        """
+        # read data
+        index_of_symbol = self.read_int()
+        if index_of_symbol >= len(writers_schema.symbols):
+            raise avro.errors.SchemaResolutionException(
+                f"Can't access enum index {index_of_symbol} for enum with {len(writers_schema.symbols)} symbols", writers_schema, readers_schema
+            )
+        read_symbol = writers_schema.symbols[index_of_symbol]
+
+        # schema resolution
+        if read_symbol not in readers_schema.symbols:
+            raise avro.errors.SchemaResolutionException(f"Symbol {read_symbol} not present in Reader's Schema", writers_schema, readers_schema)
+
+        return read_symbol
+
+    def skip_enum(self, writers_schema: avro.schema.EnumSchema) -> None:
+        return self.skip_int()
+
+    def read_array(self, datum_reader: DatumReader, writers_schema: avro.schema.ArraySchema, readers_schema: avro.schema.ArraySchema) -> List[object]:
+        """
+        Arrays are encoded as a series of blocks.
+
+        Each block consists of a long count value,
+        followed by that many array items.
+        A block with count zero indicates the end of the array.
+        Each item is encoded per the array's item schema.
+
+        If a block's count is negative,
+        then the count is followed immediately by a long block size,
+        indicating the number of bytes in the block.
+        The actual count in this case
+        is the absolute value of the count written.
+        """
+        read_items = []
+        block_count = self.read_long()
+        while block_count != 0:
+            if block_count < 0:
+                block_count = -block_count
+                block_size = self.read_long()
+            for i in range(block_count):
+                read_items.append(datum_reader.read_data(writers_schema.items, readers_schema.items, self))
+            block_count = self.read_long()
+        return read_items
+
+    def skip_array(self, writers_schema: avro.schema.ArraySchema) -> None:
+        block_count = self.read_long()
+        while block_count != 0:
+            if block_count < 0:
+                block_size = self.read_long()
+                self.skip(block_size)
+            else:
+                for i in range(block_count):
+                    self.skip_data(writers_schema.items)
+            block_count = self.read_long()
+
+    def read_map(self, datum_reader: DatumReader, writers_schema: avro.schema.MapSchema, readers_schema: avro.schema.MapSchema) -> Mapping[str, object]:
+        """
+        Maps are encoded as a series of blocks.
+
+        Each block consists of a long count value,
+        followed by that many key/value pairs.
+        A block with count zero indicates the end of the map.
+        Each item is encoded per the map's value schema.
+
+        If a block's count is negative,
+        then the count is followed immediately by a long block size,
+        indicating the number of bytes in the block.
+        The actual count in this case
+        is the absolute value of the count written.
+        """
+        read_items = {}
+        block_count = self.read_long()
+        while block_count != 0:
+            if block_count < 0:
+                block_count = -block_count
+                block_size = self.read_long()
+            for i in range(block_count):
+                key = self.read_utf8()
+                read_items[key] = datum_reader.read_data(writers_schema.values, readers_schema.values, self)
+            block_count = self.read_long()
+        return read_items
+
+    def skip_map(self, writers_schema: avro.schema.MapSchema) -> None:
+        block_count = self.read_long()
+        while block_count != 0:
+            if block_count < 0:
+                block_size = self.read_long()
+                self.skip(block_size)
+            else:
+                for i in range(block_count):
+                    self.skip_utf8()
+                    self.skip_data(writers_schema.values)
+            block_count = self.read_long()
+
     def read_union(self, datum_reader: DatumReader, writers_schema: avro.schema.UnionSchema, readers_schema: avro.schema.UnionSchema) -> object:
         """
         A union is encoded by first writing an int value indicating
@@ -1305,3 +1295,109 @@ class BinaryDecoder(Decoder):
 
         # read data
         return datum_reader.read_data(selected_writers_schema, readers_schema, self)
+
+    def skip_union(self, writers_schema: avro.schema.UnionSchema) -> None:
+        index_of_schema = int(self.read_long())
+        if index_of_schema >= len(writers_schema.schemas):
+            raise avro.errors.SchemaResolutionException(
+                f"Can't access branch index {index_of_schema} for union with {len(writers_schema.schemas)} branches", writers_schema
+            )
+        return self.skip_data(writers_schema.schemas[index_of_schema])
+
+    def read_record(
+            self, datum_reader: DatumReader, writers_schema: avro.schema.RecordSchema, readers_schema: avro.schema.RecordSchema) -> Mapping[str, object]:
+        """
+        A record is encoded by encoding the values of its fields
+        in the order that they are declared. In other words, a record
+        is encoded as just the concatenation of the encodings of its fields.
+        Field values are encoded per their schema.
+
+        Schema Resolution:
+         * the ordering of fields may be different: fields are matched by name.
+         * schemas for fields with the same name in both records are resolved
+           recursively.
+         * if the writer's record contains a field with a name not present in the
+           reader's record, the writer's value for that field is ignored.
+         * if the reader's record schema has a field that contains a default value,
+           and writer's schema does not have a field with the same name, then the
+           reader should use the default value from its field.
+         * if the reader's record schema has a field with no default value, and
+           writer's schema does not have a field with the same name, then the
+           field's value is unset.
+        """
+        # schema resolution
+        readers_fields_dict = readers_schema.fields_dict
+        read_record = {}
+        for field in writers_schema.fields:
+            readers_field = readers_fields_dict.get(field.name)
+            if readers_field is not None:
+                field_val = datum_reader.read_data(field.type, readers_field.type, self)
+                read_record[field.name] = field_val
+            else:
+                self.skip_data(field.type)
+
+        # fill in default values
+        if len(readers_fields_dict) > len(read_record):
+            writers_fields_dict = writers_schema.fields_dict
+            for field_name, field in readers_fields_dict.items():
+                if field_name not in writers_fields_dict:
+                    if not field.has_default:
+                        raise avro.errors.SchemaResolutionException(f"No default value for field {field_name}", writers_schema, readers_schema)
+                    field_val = self._read_default_value(field.type, field.default)
+                    read_record[field.name] = field_val
+        return read_record
+
+    def skip_record(self, writers_schema: avro.schema.RecordSchema) -> None:
+        for field in writers_schema.fields:
+            self.skip_data(field.type)
+
+    def _read_default_value(self, field_schema: avro.schema.Schema, default_value: object) -> object:
+        """
+        Basically a JSON Decoder?
+        """
+        if field_schema.type == "null":
+            if default_value is None:
+                return None
+            raise avro.errors.InvalidDefaultException(field_schema, default_value)
+        if field_schema.type == "boolean":
+            return bool(default_value)
+        if field_schema.type in ("int", "long"):
+            if isinstance(default_value, int):
+                return default_value
+            raise avro.errors.InvalidDefaultException(field_schema, default_value)
+        if field_schema.type in ("float", "double"):
+            if isinstance(default_value, float):
+                return default_value
+            raise avro.errors.InvalidDefaultException(field_schema, default_value)
+        if field_schema.type in ("bytes", "fixed"):
+            if isinstance(default_value, bytes):
+                return default_value
+            if isinstance(default_value, str):
+                return default_value.encode()
+            raise avro.errors.InvalidDefaultException(field_schema, default_value)
+        if field_schema.type in ("enum", "string"):
+            if isinstance(default_value, str):
+                return default_value
+            raise avro.errors.InvalidDefaultException(field_schema, default_value)
+        if isinstance(field_schema, avro.schema.ArraySchema):
+            if isinstance(default_value, Iterable):
+                return [self._read_default_value(field_schema.items, json_val) for json_val in default_value]
+            raise avro.errors.InvalidDefaultException(field_schema, default_value)
+        if isinstance(field_schema, avro.schema.MapSchema):
+            if isinstance(default_value, Mapping):
+                return {key: self._read_default_value(field_schema.values, json_val) for key, json_val in default_value.items()}
+            raise avro.errors.InvalidDefaultException(field_schema, default_value)
+        if isinstance(field_schema, avro.schema.UnionSchema):
+            return self._read_default_value(field_schema.schemas[0], default_value)
+        if isinstance(field_schema, avro.schema.RecordSchema):
+            if not isinstance(default_value, Mapping):
+                raise avro.errors.InvalidDefaultException(field_schema, default_value)
+            read_record = {}
+            for field in field_schema.fields:
+                json_val = default_value.get(field.name)
+                if json_val is None:
+                    json_val = field.default
+                field_val = self._read_default_value(field.type, json_val)
+                read_record[field.name] = field_val
+            return read_record
+        raise avro.errors.AvroException(f"Unknown type: {field_schema.type}")
